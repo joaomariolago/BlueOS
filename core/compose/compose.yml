@@ -7,7 +7,7 @@ services:
     # This can be used as an alternative to ports binding
     # Using host as a network mode is only supported for linux
     # Ref: https://docs.docker.com/network/drivers/host
-    # network_mode: host
+    network_mode: host
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /run/udev:/run/udev
@@ -20,6 +20,7 @@ services:
       # Allow changes made to the repository to be directly reflected in the running container
       - ../start-blueos-core:/usr/bin/start-blueos-core
       - ../services:/home/pi/services
+      - ../frontend/dist:/home/pi/frontend
     pid: "host"
     environment:
       - BLUEOS_DISABLE_SERVICES=cable_guy,wifi,commander
