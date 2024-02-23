@@ -19,6 +19,15 @@ RUN /home/pi/tools/install-static-binaries.sh
 # BlueOS-docker base image
 FROM bluerobotics/blueos-base:v0.1.0
 
+RUN apt-get update && apt-get install -y wget build-essential && apt-get clean
+
+# Install jemalloc
+WORKDIR /opt
+RUN wget "https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2"
+RUN tar xvjf jemalloc-5.3.0.tar.bz2
+WORKDIR /opt/jemalloc-5.3.0
+RUN ./configure && make && make install
+
 # Define arguments for target platform
 # These arguments are defined automatically by buildx when using `--platform`
 ARG TARGETARCH
