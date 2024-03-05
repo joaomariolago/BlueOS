@@ -85,6 +85,8 @@
 import Vue, { PropType } from 'vue'
 
 import Notifier from '@/libs/notifier'
+import Popup from '@/libs/popup'
+import beacon from '@/store/beacon'
 import ethernet from '@/store/ethernet'
 import { AddressMode, EthernetInterface } from '@/types/ethernet'
 import { ethernet_service } from '@/types/frontend_services'
@@ -127,8 +129,54 @@ export default Vue.extend({
     is_static_ip_present(): boolean {
       return this.adapter.addresses.some((address) => address.mode === AddressMode.unmanaged)
     },
+    is_interface_last_ip_address(): boolean {
+      return this.adapter.addresses.length === 1
+    },
+  },
+  mounted() {
+    beacon.registerBeaconListener(this)
   },
   methods: {
+    /**
+     * Opens a dialog and requests the user to confirm the deletion of the IP address.
+     * @returns {Promise<boolean>} - Resolves to true if no confirmation is needed or
+     * granted and false otherwise.
+     */
+    async confirm_last_interface_ip(): Promise<boolean> {
+      if (this.is_interface_last_ip_address) {
+        const result = await Popup.fire({
+          title: 'Last IP Address',
+          text: 'This is the last IP address on the interface. Are you sure you want to proceed?',
+          confirmButtonText: 'Yes',
+          showCancelButton: true,
+        })
+
+        return result.confirmed
+      }
+
+      return true
+    },
+    /**
+     * Opens a dialog and requests the user to confirm the deletion of current used IP address.
+     * @returns {Promise<boolean>} - Resolves to true if no confirmation is needed or
+     * granted and false otherwise.
+     */
+    async confirm_ip_being_used(ip: string): Promise<boolean> {
+      const ip_being_used = ip === beacon.nginx_ip_address
+
+      if (true) {
+        const result = await Popup.fire({
+          title: 'IP Address in Use',
+          text: 'The IP address is currently being used to access BlueOS. Are you sure you want to proceed?',
+          confirmButtonText: 'Yes',
+          showCancelButton: true,
+        })
+
+        return result.confirmed
+      }
+
+      return true
+    },
     showable_mode_name(mode: AddressMode): string {
       switch (mode) {
         case AddressMode.client: return 'Dynamic IP'
@@ -141,6 +189,13 @@ export default Vue.extend({
       this.show_creation_dialog = true
     },
     async deleteAddress(ip: string): Promise<void> {
+      const confirmed_ip_used = await this.confirm_ip_being_used(ip)
+      const confirmed_last_ip = await this.confirm_last_interface_ip()
+
+      if (!confirmed_ip_used || !confirmed_last_ip) {
+        return
+      }
+
       ethernet.setUpdatingInterfaces(true)
 
       await back_axios({
