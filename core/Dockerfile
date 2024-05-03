@@ -33,6 +33,14 @@ RUN [ -z "$GIT_DESCRIBE_TAGS" ] \
     && echo "Use: --build-arg GIT_DESCRIBE_TAGS=\$(git describe --tags --long --always)" \
     && exit 1 || exit 0
 
+RUN /bin/bash -c 'echo "Hello from Bash"'
+
+RUN echo "GIT_DESCRIBE_TAGS: $GIT_DESCRIBE_TAGS"
+
+RUN /bin/bash -c "[[ ! $GIT_DESCRIBE_TAGS =~ -[0-9]+-g[a-f0-9]{8}$ ]]" \
+  && echo "Invalid format: $GIT_DESCRIBE_TAGS (E.g: <TAG>-<COMMIT_NUMBER>-g<SHORT_HASH>)" \
+  && exit 1 || exit 0
+
 # Set these arguments as environment variables
 ENV TARGETARCH=${TARGETARCH}
 ENV TARGETVARIANT=${TARGETVARIANT}
