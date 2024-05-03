@@ -28,16 +28,13 @@ ARG TARGETVARIANT
 # Ensure that the git describe exists and also is in valid format as well
 # The format can be invalid if someone is build BlueOS without a tag as reference
 ARG GIT_DESCRIBE_TAGS
-ENV GIT_DESCRIBE_TAGS=${GIT_DESCRIBE_TAGS:-0.0.0-0-g00000000}
 
-RUN echo "GIT_DESCRIBE_TAGS is set to: $GIT_DESCRIBE_TAGS"
+RUN echo "GIT_DESCRIBE_TAGS is $GIT_DESCRIBE_TAGS"
 
-# Check if GIT_DESCRIBE_TAGS is empty
 RUN [ -z "$GIT_DESCRIBE_TAGS" ] \
-    &&  echo "GIT_DESCRIBE_TAGS argument not provided."; \
-    &&  echo "Use: --build-arg GIT_DESCRIBE_TAGS=\$(git describe --tags --long --always)"; \
-    &&  exit 1; \
-    || exit 0
+    && echo "GIT_DESCRIBE_TAGS argument not provided." \
+    && echo "Use: --build-arg GIT_DESCRIBE_TAGS=\$(git describe --tags --long --always)" \
+    && exit 1 || exit 0
 
 # Validate the format of GIT_DESCRIBE_TAGS
 RUN /bin/bash -c "[[ ! $GIT_DESCRIBE_TAGS =~ -[0-9]+-g[a-f0-9]{8}$ ]]" \
