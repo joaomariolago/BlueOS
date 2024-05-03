@@ -35,7 +35,11 @@ RUN [ -z "$GIT_DESCRIBE_TAGS" ] \
 
 RUN /bin/bash -c 'echo "Hello from Bash"'
 
-RUN echo "GIT_DESCRIBE_TAGS: $GIT_DESCRIBE_TAGS"
+RUN echo "GIT_DESCRIBE_TAGS Before: $GIT_DESCRIBE_TAGS"
+
+ENV GIT_DESCRIBE_TAGS=${GIT_DESCRIBE_TAGS:-0.0.0-0-g00000000}
+
+RUN echo "GIT_DESCRIBE_TAGS After: $GIT_DESCRIBE_TAGS"
 
 RUN /bin/bash -c "[[ ! $GIT_DESCRIBE_TAGS =~ -[0-9]+-g[a-f0-9]{8}$ ]]" \
   && echo "Invalid format: $GIT_DESCRIBE_TAGS (E.g: <TAG>-<COMMIT_NUMBER>-g<SHORT_HASH>)" \
