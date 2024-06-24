@@ -159,6 +159,7 @@ import Fuse from 'fuse.js'
 import Vue from 'vue'
 
 import mavlink2rest from '@/libs/MAVLink2Rest'
+import { MavAutopilot } from '@/libs/MAVLink2Rest/mavlink2rest-ts/messages/mavlink2rest-enum'
 import autopilot_data from '@/store/autopilot'
 import autopilot from '@/store/autopilot_manager'
 import Parameter, { printParam } from '@/types/autopilot/parameter'
@@ -220,6 +221,14 @@ export default Vue.extend({
     },
     finished_loading() {
       return autopilot_data.finished_loading
+    },
+    is_px4_firmware() {
+      return autopilot_data.autopilot_type === MavAutopilot.MAV_AUTOPILOT_PX4
+    },
+    should_filters_render() {
+      // Right now we only render the filters on PX4 since they have default and we want to allow
+      // to filter for modified parameters
+      return this.is_px4_firmware
     },
   },
   watch: {
