@@ -1,7 +1,7 @@
 <template>
   <v-card>
     <v-card-subtitle class="px-4 pt-4 pb-2 d-flex justify-space-between align-start">
-      <v-avatar size="100" rounded="0">
+      <v-avatar size="120" rounded="0">
         <v-img contain :src="extension.extension_logo" />
       </v-avatar>
       <div class="extension-creators">
@@ -13,6 +13,9 @@
         </div>
         <div class="extension-architectures">
           <strong>{{ compatible_version_archs.join(', ') }}</strong>
+        </div>
+        <div class="extension-architectures extension-feature-tags">
+          <strong>{{ filter_tags.join(', ') }}</strong>
         </div>
       </div>
     </v-card-subtitle>
@@ -241,6 +244,9 @@ export default Vue.extend({
 
       return JSON.stringify(this.editing_permissions) !== JSON.stringify(this.selected?.permissions)
     },
+    filter_tags(): string[] {
+      return this.selected?.filter_tags ?? []
+    },
   },
   watch: {
     extension() {
@@ -365,5 +371,13 @@ div.readme ul {
   font-size: 15px;
   padding-top: 4px;
   text-transform: uppercase;
+}
+.extension-feature-tags {
+  max-width: 70%;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>
