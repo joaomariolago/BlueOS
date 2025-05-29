@@ -45,8 +45,7 @@ class AbstractNetworkHandler:
         interface_index = (await self.ipr.link_lookup(ifname=interface_name))[0]
 
         # Check if IP already exists on the interface
-        existing_addrs = await self.ipr.get_addr(index=interface_index)
-        for addr in existing_addrs:
+        async for addr in await self.ipr.get_addr(index=interface_index):
             if addr.get_attr("IFA_ADDRESS") == ip:
                 logger.info(f"IP '{ip}' already exists on interface '{interface_name}', skipping addition.")
                 return
@@ -167,7 +166,7 @@ class AbstractNetworkHandler:
                 routes = await self.ipr.get_routes(oif=interface_index, family=socket.AF_INET)
 
                 # Update existing routes
-                for route in routes:
+                async for route in routes:
                     try:
                         await self._update_route(interface.name, interface_index, route, priority)
                     except Exception as e:
@@ -241,8 +240,7 @@ class BookwormHandler(AbstractNetworkHandler):
         """
         try:
             interface_index = (await self.ipr.link_lookup(ifname=interface_name))[0]
-            addresses = await self.ipr.get_addr(index=interface_index)
-            for addr in addresses:
+            async for addr in await self.ipr.get_addr(index=interface_index):
                 for key, value in addr["attrs"]:
                     if key == "IFA_ADDRESS":
                         # If any IP is not static, it's dynamic

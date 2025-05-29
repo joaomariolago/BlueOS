@@ -8,8 +8,8 @@ from socket import AddressFamily
 from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 import psutil
+from aiocache import cached
 from commonwealth.settings.manager import PydanticManager
-from commonwealth.utils.decorators import temporary_cache
 from commonwealth.utils.DHCPDiscovery import DHCPDiscoveryError, discover_dhcp_servers
 from commonwealth.utils.DHCPServerManager import Dnsmasq as DHCPServerManager
 from loguru import logger
@@ -156,13 +156,13 @@ class EthernetManager:
         except Exception as error:
             logger.error(f"Routes configuration failed: {error}")
 
-    def _get_wifi_interfaces(self) -> List[str]:
+    async def _get_wifi_interfaces(self) -> List[str]:
         """Get wifi interface list
 
         Returns:
             list: List with the name of the wifi interfaces
         """
-        interfaces = self.iw.list_dev()
+        interfaces = await asyncio.to_thread(self.iw.list_dev)
         result = []
         for interface in interfaces:
             for flag, value in interface["attrs"]:
@@ -171,7 +171,7 @@ class EthernetManager:
                     result += [value]
         return result
 
-    def is_valid_interface_name(self, interface_name: str, filter_wifi: bool = False) -> bool:
+    async def is_valid_interface_name(self, interface_name: str, filter_wifi: bool = False) -> bool:
         """Check if an interface name is valid
 
         Args:
@@ -183,7 +183,7 @@ class EthernetManager:
         """
         blacklist = ["lo", "ham.*", "docker.*", "veth.*"]
         if filter_wifi:
-            wifi_interfaces = self._get_wifi_interfaces()
+            wifi_interfaces = await self._get_wifi_interfaces()
             blacklist += wifi_interfaces
 
         if not interface_name:
@@ -196,7 +196,7 @@ class EthernetManager:
 
         return True
 
-    def validate_interface_data(self, interface: NetworkInterface, filter_wifi: bool = False) -> bool:
+    async def validate_interface_data(self, interface: NetworkInterface, filter_wifi: bool = False) -> bool:
         """Check if interface configuration is valid
 
         Args:
@@ -206,7 +206,7 @@ class EthernetManager:
         Returns:
             bool: True if valid, False if not
         """
-        return self.is_valid_interface_name(interface.name, filter_wifi)
+        return await self.is_valid_interface_name(interface.name, filter_wifi)
 
     @staticmethod
     def _is_server_address_present(interface: NetworkInterface) -> bool:
@@ -235,9 +235,8 @@ class EthernetManager:
         Returns:
             bool: true if static false if not
         """
-        addresses = list(await self.ipr.get_addr())
-        for address in addresses:
 
+        async for address in await self.ipr.get_addr():
             def get_item(items: List[Tuple[str, Any]], name: str) -> Any:
                 return [value for key, value in items if key == name][0]
 
@@ -407,7 +406,7 @@ class EthernetManager:
             # We don't care about virtual ethernet interfaces
             ## Virtual interfaces are created by programs such as docker
             ## and they are an abstraction of real interfaces, the ones that we want to configure.
-            if not self.is_valid_interface_name(interface, filter_wifi):
+            if not await self.is_valid_interface_name(interface, filter_wifi):
                 continue
 
             valid_addresses = []
@@ -449,7 +448,7 @@ class EthernetManager:
                 name=interface, addresses=valid_addresses, info=info, priority=priority, routes=list(routes)
             )
             # Check if it's valid and add to the result
-            if self.validate_interface_data(interface_data, filter_wifi):
+            if await self.validate_interface_data(interface_data, filter_wifi):
                 result += [interface_data]
 
         return result
@@ -473,7 +472,7 @@ class EthernetManager:
         """
         return self.ndb.interfaces.dump().filter(ifname=interface_name)[0]
 
-    @temporary_cache(timeout_seconds=1)
+    @cached(ttl=1)
     async def get_interfaces_priority(self) -> List[NetworkInterfaceMetric]:
         """Get priority of network interfaces dhcpcd otherwise fetch from ipr.
 
@@ -498,7 +497,7 @@ class EthernetManager:
 
         # First find interfaces with default routes
         interfaces_with_default_routes = set()
-        for route in routes:
+        async for route in routes:
             dst = route.get_attr("RTA_DST")
             oif = route.get_attr("RTA_OIF")
             if dst is None and oif is not None:  # Default route
@@ -508,13 +507,13 @@ class EthernetManager:
         # IFF_UP flag is 0x1, IFF_RUNNING is 0x40 in Linux
         name_dict = {
             iface["index"]: iface.get_attr("IFLA_IFNAME")
-            for iface in interfaces
+            async for iface in interfaces
             if (iface["flags"] & 0x1) and (iface["flags"] & 0x40) and iface["index"] in interfaces_with_default_routes
         }
 
         # Get metrics for default routes of active interfaces
         interface_metrics: Dict[int, int] = {}
-        for route in routes:
+        async for route in routes:
             oif = route.get_attr("RTA_OIF")
             if oif in name_dict and route.get_attr("RTA_DST") is None:  # Only default routes
                 metric = route.get_attr("RTA_PRIORITY", 0)

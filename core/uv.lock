@@ -404,6 +404,7 @@ name = "cable-guy"
 version = "0.1.0"
 source = { virtual = "services/cable_guy" }
 dependencies = [
+    { name = "aiocache" },
     { name = "aiofiles" },
     { name = "anyio" },
     { name = "appdirs" },
@@ -420,6 +421,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiocache", specifier = "==0.12.2" },
     { name = "aiofiles", specifier = "==0.6.0" },
     { name = "anyio", specifier = "==3.7.1" },
     { name = "appdirs", specifier = "==1.4.4" },

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A simple web api to provide access to ethernet configuration."
 requires-python = ">=3.11"
 dependencies = [
+    "aiocache==0.12.2",
     "aiofiles==0.6.0",
     "anyio==3.7.1",
     "appdirs==1.4.4",

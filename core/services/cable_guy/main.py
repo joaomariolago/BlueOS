@@ -5,8 +5,8 @@ import os
 import sys
 from typing import Any, List, Optional
 
+from aiocache import cached
 from commonwealth.utils.apis import GenericErrorHandlingRoute, PrettyJSONResponse
-from commonwealth.utils.decorators import temporary_cache
 from commonwealth.utils.logs import InterceptHandler, init_logger
 from fastapi import Body, FastAPI
 from fastapi.responses import HTMLResponse
@@ -35,7 +35,7 @@ app.router.route_class = GenericErrorHandlingRoute
 
 @app.get("/ethernet", response_model=List[NetworkInterface], summary="Retrieve ethernet interfaces.")
 @version(1, 0)
-@temporary_cache(timeout_seconds=10)
+@cached(ttl=10)
 async def retrieve_ethernet_interfaces(_: Optional[Any] = None) -> Any:
     """REST API endpoint to retrieve the configured ethernet interfaces."""
     return await manager.get_ethernet_interfaces()
@@ -52,7 +52,7 @@ async def configure_interface(interface: NetworkInterface = Body(...)) -> Any:
 
 @app.get("/interfaces", response_model=List[NetworkInterface], summary="Retrieve all network interfaces.")
 @version(1, 0)
-@temporary_cache(timeout_seconds=1)
+@cached(ttl=10)
 async def retrieve_interfaces(_: Optional[Any] = None) -> Any:
     """REST API endpoint to retrieve the all network interfaces."""
     return await manager.get_interfaces()
@@ -170,16 +170,25 @@ if __name__ == "__main__":
         sys.exit(1)
 
     async def main() -> None:
-        # Running uvicorn with log disabled so loguru can handle it
         config = Config(app=app, host="0.0.0.0", port=9090, log_config=None)
         server = Server(config)
 
         await manager.initialize()
-        asyncio.create_task(manager.watchdog())
-        await server.serve()
+        watchdog_task = asyncio.create_task(manager.watchdog())
+
+        try:
+            await server.serve()
+        finally:
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                logger.info("Watchdog task cancelled.")
+            manager.stop()
+            logger.info("Cable Guy service shut down.")
 
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Shutting down Cable Guy service.")
-        manager.stop()
+        logger.info("Cable Guy interrupted by user.")
+        sys.exit(0)
