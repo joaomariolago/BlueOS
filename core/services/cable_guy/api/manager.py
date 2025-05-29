@@ -13,7 +13,7 @@ from commonwealth.utils.decorators import temporary_cache
 from commonwealth.utils.DHCPDiscovery import DHCPDiscoveryError, discover_dhcp_servers
 from commonwealth.utils.DHCPServerManager import Dnsmasq as DHCPServerManager
 from loguru import logger
-from pyroute2 import IW, NDB, IPRoute
+from pyroute2 import IW, NDB, AsyncIPRoute
 from pyroute2.netlink.exceptions import NetlinkError
 from pyroute2.netlink.rtnl.ifaddrmsg import ifaddrmsg
 
@@ -48,7 +48,7 @@ class EthernetManager:
     # WIFI interface
     iw = IW()
     # IP abstraction interface
-    ipr = IPRoute()
+    ipr = AsyncIPRoute()
     # DNS abstraction
     dns = dns.Dns()
     # Network handler for dhcpd and network manager
@@ -107,7 +107,7 @@ class EthernetManager:
         async with self.config_mutex:
             if not watchdog_call:
                 await self.network_handler.cleanup_interface_connections(interface.name)
-            interfaces = self.get_interfaces()
+            interfaces = await self.get_interfaces()
             valid_names = [interface.name for interface in interfaces]
             if interface.name not in valid_names:
                 raise ValueError(f"Invalid interface name ('{interface.name}'). Valid names are: {valid_names}")
@@ -115,43 +115,43 @@ class EthernetManager:
             logger.info(f"Setting configuration for interface '{interface.name}'.")
             if interface.addresses:
                 # bring interface up
-                interface_index = self._get_interface_index(interface.name)
-                self.ipr.link("set", index=interface_index, state="up")
+                interface_index = await self._get_interface_index(interface.name)
+                await self.ipr.link("set", index=interface_index, state="up")
             logger.info(f"Configuring addresses for interface '{interface.name}': {interface.addresses}.")
             for address in interface.addresses:
                 if address.mode == AddressMode.Unmanaged:
                     logger.info(f"Adding static IP '{address.ip}' to interface '{interface.name}'.")
-                    self.add_static_ip(interface.name, address.ip)
+                    await self.add_static_ip(interface.name, address.ip)
                 elif address.mode == AddressMode.Server:
                     logger.info(f"Adding DHCP server with gateway '{address.ip}' to interface '{interface.name}'.")
-                    self.add_dhcp_server_to_interface(interface.name, address.ip)
+                    await self.add_dhcp_server_to_interface(interface.name, address.ip)
                 elif address.mode == AddressMode.BackupServer:
                     logger.info(
                         f"Adding backup DHCP server with gateway '{address.ip}' to interface '{interface.name}'."
                     )
-                    self.add_dhcp_server_to_interface(interface.name, address.ip, backup=True)
+                    await self.add_dhcp_server_to_interface(interface.name, address.ip, backup=True)
             # Even if it happened to receive more than one dynamic IP, only one trigger is necessary
             if any(address.mode == AddressMode.Client for address in interface.addresses):
                 logger.info(f"Triggering dynamic IP acquisition for interface '{interface.name}'.")
-                self.trigger_dynamic_ip_acquisition(interface.name)
+                await self.trigger_dynamic_ip_acquisition(interface.name)
 
             # Handle routes configuration
-            self._set_routes_configuration(interface)
+            await self._set_routes_configuration(interface)
 
-    def _set_routes_configuration(self, interface: NetworkInterface) -> None:
+    async def _set_routes_configuration(self, interface: NetworkInterface) -> None:
         try:
-            current_routes = self.get_routes(interface.name, ignore_unmanaged=True)
+            current_routes = await self.get_routes(interface.name, ignore_unmanaged=True)
             desired_routes = interface.routes
 
             # Remove old routes
             for current_route in current_routes:
                 if current_route not in desired_routes:
-                    self.remove_route(interface.name, current_route)
+                    await self.remove_route(interface.name, current_route)
 
             # Add new routes
             for desired_route in desired_routes:
                 if desired_route not in current_routes:
-                    self.add_route(interface.name, desired_route)
+                    await self.add_route(interface.name, desired_route)
 
         except Exception as error:
             logger.error(f"Routes configuration failed: {error}")
@@ -224,7 +224,7 @@ class EthernetManager:
         """
         return re.match(r"\d+.\d+.\d+.\d+", ip) is not None
 
-    def is_static_ip(self, ip: str) -> bool:
+    async def is_static_ip(self, ip: str) -> bool:
         """Check if ip address is static or dynamic
             For more information: https://code.woboq.org/qt5/include/linux/if_addr.h.html
                 https://www.systutorials.com/docs/linux/man/8-ip-address/
@@ -235,7 +235,8 @@ class EthernetManager:
         Returns:
             bool: true if static false if not
         """
-        for address in list(self.ipr.get_addr()):
+        addresses = list(await self.ipr.get_addr())
+        for address in addresses:
 
             def get_item(items: List[Tuple[str, Any]], name: str) -> Any:
                 return [value for key, value in items if key == name][0]
@@ -248,7 +249,7 @@ class EthernetManager:
             return result
         return False
 
-    def _get_interface_index(self, interface_name: str) -> int:
+    async def _get_interface_index(self, interface_name: str) -> int:
         """Get interface index for internal usage
 
         Args:
@@ -257,50 +258,50 @@ class EthernetManager:
         Returns:
             int: Interface index
         """
-        interface_index = int(self.ipr.link_lookup(ifname=interface_name)[0])
+        interface_index = int((await self.ipr.link_lookup(ifname=interface_name))[0])
         return interface_index
 
-    def flush_interface(self, interface_name: str) -> None:
+    async def flush_interface(self, interface_name: str) -> None:
         """Flush all ip addresses in a specific interface
 
         Args:
             interface_name (str): Interface name
         """
-        interface_index = self._get_interface_index(interface_name)
-        self.ipr.flush_addr(index=interface_index)
+        interface_index = await self._get_interface_index(interface_name)
+        await self.ipr.flush_addr(index=interface_index)
         logger.info(f"Flushing IP addresses from interface {interface_name}.")
 
-    def enable_interface(self, interface_name: str, enable: bool = True) -> None:
+    async def enable_interface(self, interface_name: str, enable: bool = True) -> None:
         """Enable interface
 
         Args:
             interface_name (str): Interface name
             enable (bool, optional): Set interface status. Defaults to True
         """
-        interface_index = self._get_interface_index(interface_name)
+        interface_index = await self._get_interface_index(interface_name)
         interface_state = "up" if enable else "down"
-        self.ipr.link("set", index=interface_index, state=interface_state)
+        await self.ipr.link("set", index=interface_index, state=interface_state)
         logger.info(f"Setting interface {interface_name} to '{interface_state}' state.")
 
-    def trigger_dynamic_ip_acquisition(self, interface_name: str) -> None:
+    async def trigger_dynamic_ip_acquisition(self, interface_name: str) -> None:
         """Trigger external DHCP servers to possibly acquire a dynamic IP by restarting the interface.
 
         Args:
             interface_name (str): Interface name
         """
         try:
-            self.network_handler.trigger_dynamic_ip_acquisition(interface_name)
+            await self.network_handler.trigger_dynamic_ip_acquisition(interface_name)
             return
         except NotImplementedError as error:
             logger.info(f"Handler does not support triggering dynamic IP acquisition. {error}")
             logger.info(f"Restarting interface {interface_name} to trigger dynamic IP acquisition.")
-            self.enable_interface(interface_name, enable=False)
+            await self.enable_interface(interface_name, enable=False)
             time.sleep(1)
-            self.enable_interface(interface_name, enable=True)
+            await self.enable_interface(interface_name, enable=True)
         except Exception as error:
             logger.error(f"Failed to trigger dynamic IP acquisition for interface {interface_name}. {error}")
         finally:
-            self.add_static_ip(interface_name, "0.0.0.0", mode=AddressMode.Client)
+            await self.add_static_ip(interface_name, "0.0.0.0", mode=AddressMode.Client)
 
     def _update_interface_settings(self, interface_name: str, updated_interface: NetworkInterface) -> None:
         """Helper method to update interface settings in a consistent way.
@@ -314,7 +315,7 @@ class EthernetManager:
         self._settings.content.append(updated_interface)
         self._manager.save()
 
-    def add_static_ip(self, interface_name: str, ip: str, mode: AddressMode = AddressMode.Unmanaged) -> None:
+    async def add_static_ip(self, interface_name: str, ip: str, mode: AddressMode = AddressMode.Unmanaged) -> None:
         """Set ip address for a specific interface and saves it to the settings file
 
         Args:
@@ -325,7 +326,7 @@ class EthernetManager:
         logger.info(f"Adding {mode} IP '{ip}' to interface '{interface_name}'.")
         if mode != AddressMode.Client:
             if not self._is_ip_on_interface(interface_name, ip):
-                self.network_handler.add_static_ip(interface_name, ip)
+                await self.network_handler.add_static_ip(interface_name, ip)
             else:
                 logger.info(f"IP '{ip}' already exists on interface '{interface_name}'. Skipping.")
 
@@ -349,7 +350,7 @@ class EthernetManager:
 
         self._update_interface_settings(interface_name, saved_interface)
 
-    def remove_ip(self, interface_name: str, ip_address: str) -> None:
+    async def remove_ip(self, interface_name: str, ip_address: str) -> None:
         """Delete IP address appended on the interface
 
         Args:
@@ -364,7 +365,7 @@ class EthernetManager:
                 and self._dhcp_server_on_interface(interface_name).ipv4_gateway == ip_address
             ):
                 self.remove_dhcp_server_from_interface(interface_name)
-            self.network_handler.remove_static_ip(interface_name, ip_address)
+            await self.network_handler.remove_static_ip(interface_name, ip_address)
         except Exception as error:
             raise RuntimeError(f"Cannot delete IP '{ip_address}' from interface {interface_name}.") from error
 
@@ -382,8 +383,8 @@ class EthernetManager:
 
         self._update_interface_settings(interface_name, saved_interface)
 
-    def get_interface_by_name(self, name: str) -> NetworkInterface:
-        for interface in self.get_ethernet_interfaces():
+    async def get_interface_by_name(self, name: str) -> NetworkInterface:
+        for interface in await self.get_ethernet_interfaces():
             if interface.name == name:
                 return interface
         raise ValueError(f"No interface with name '{name}' is present.")
@@ -392,7 +393,7 @@ class EthernetManager:
         return next((i for i in self._settings.content if i.name == name), None)
 
     # pylint: disable=too-many-locals
-    def get_interfaces(self, filter_wifi: bool = False) -> List[NetworkInterface]:
+    async def get_interfaces(self, filter_wifi: bool = False) -> List[NetworkInterface]:
         """Get interfaces information
 
         Args:
@@ -418,7 +419,7 @@ class EthernetManager:
                 valid_ip = EthernetManager.weak_is_ip_address(address.address)
                 ip = address.address if valid_ip else "undefined"
 
-                is_static_ip = self.is_static_ip(ip)
+                is_static_ip = await self.is_static_ip(ip)
 
                 # Populate our output item
                 if (
@@ -431,18 +432,18 @@ class EthernetManager:
                 else:
                     mode = AddressMode.Unmanaged if is_static_ip and valid_ip else AddressMode.Client
                 valid_addresses.append(InterfaceAddress(ip=ip, mode=mode))
-            info = self.get_interface_info(interface)
+            info = await self.get_interface_info(interface)
             saved_interface = self.get_saved_interface_by_name(interface)
             # Get priority from saved interface or from current interface metrics, defaulting to None if neither exists
             priority = None
             if saved_interface and saved_interface.priority is not None:
                 priority = saved_interface.priority
             else:
-                interface_metric = self.get_interface_priority(interface)
+                interface_metric = await self.get_interface_priority(interface)
                 if interface_metric:
                     priority = interface_metric.priority
 
-            routes = self.get_routes(interface, ignore_unmanaged=False)
+            routes = await self.get_routes(interface, ignore_unmanaged=False)
 
             interface_data = NetworkInterface(
                 name=interface, addresses=valid_addresses, info=info, priority=priority, routes=list(routes)
@@ -453,13 +454,13 @@ class EthernetManager:
 
         return result
 
-    def get_ethernet_interfaces(self) -> List[NetworkInterface]:
+    async def get_ethernet_interfaces(self) -> List[NetworkInterface]:
         """Get ethernet interfaces information
 
         Returns:
             List of NetworkInterface instances available
         """
-        return self.get_interfaces(filter_wifi=True)
+        return await self.get_interfaces(filter_wifi=True)
 
     def get_interface_ndb(self, interface_name: str) -> Any:
         """Get interface NDB information for interface
@@ -473,27 +474,27 @@ class EthernetManager:
         return self.ndb.interfaces.dump().filter(ifname=interface_name)[0]
 
     @temporary_cache(timeout_seconds=1)
-    def get_interfaces_priority(self) -> List[NetworkInterfaceMetric]:
+    async def get_interfaces_priority(self) -> List[NetworkInterfaceMetric]:
         """Get priority of network interfaces dhcpcd otherwise fetch from ipr.
 
         Returns:
             List[NetworkInterfaceMetric]: List of interface priorities, lower is higher priority
         """
-        return self._get_interfaces_priority_from_ipr()
+        return await self._get_interfaces_priority_from_ipr()
 
-    def _get_interfaces_priority_from_ipr(self) -> List[NetworkInterfaceMetric]:
+    async def _get_interfaces_priority_from_ipr(self) -> List[NetworkInterfaceMetric]:
         """Get the priority metrics for all network interfaces that are UP and RUNNING.
 
         Returns:
             List[NetworkInterfaceMetric]: A list of priority metrics for each active interface.
         """
 
-        interfaces = self.ipr.get_links()
+        interfaces = await self.ipr.get_links()
         # I hope that you are not here to move this code to IPv6.
         # If that is the case, you'll need to figure out a way to handle
         # priorities between interfaces, between IP categories.
         # GLHF
-        routes = self.ipr.get_routes(family=AddressFamily.AF_INET)
+        routes = await self.ipr.get_routes(family=AddressFamily.AF_INET)
 
         # First find interfaces with default routes
         interfaces_with_default_routes = set()
@@ -527,7 +528,7 @@ class EthernetManager:
             for index, name in name_dict.items()
         ]
 
-    def set_interfaces_priority(self, interfaces: List[NetworkInterfaceMetricApi]) -> None:
+    async def set_interfaces_priority(self, interfaces: List[NetworkInterfaceMetricApi]) -> None:
         """Sets network interface priority. This is an abstraction function for different
         implementations.
 
@@ -535,7 +536,7 @@ class EthernetManager:
             interfaces (List[NetworkInterfaceMetricApi]): A list of interfaces and their priority metrics.
                 sorted by priority to set, if values are undefined.
         """
-        self.network_handler.set_interfaces_priority(interfaces)
+        await self.network_handler.set_interfaces_priority(interfaces)
         # save to settings
         for interface in interfaces:
             saved_interface = self.get_saved_interface_by_name(interface.name)
@@ -546,7 +547,7 @@ class EthernetManager:
             saved_interface.priority = interface.priority
             self._update_interface_settings(interface.name, saved_interface)
 
-    def get_interface_priority(self, interface_name: str) -> Optional[NetworkInterfaceMetric]:
+    async def get_interface_priority(self, interface_name: str) -> Optional[NetworkInterfaceMetric]:
         """Get the priority metric for a network interface.
 
         Args:
@@ -556,7 +557,7 @@ class EthernetManager:
             Optional[NetworkInterfaceMetric]: The priority metric for the interface, or None if no metric found.
         """
         metric: NetworkInterfaceMetric
-        for metric in self.get_interfaces_priority():
+        for metric in await self.get_interfaces_priority():
             if interface_name == metric.name:
                 return metric
 
@@ -582,7 +583,7 @@ class EthernetManager:
         if result.returncode != 0:
             raise RuntimeError(f"Failed to change network priority {name}")
 
-    def get_interface_info(self, interface_name: str) -> InterfaceInfo:
+    async def get_interface_info(self, interface_name: str) -> InterfaceInfo:
         """Get interface info field
 
         Args:
@@ -591,7 +592,7 @@ class EthernetManager:
         Returns:
             InterfaceInfo object
         """
-        metric = self.get_interface_priority(interface_name)
+        metric = await self.get_interface_priority(interface_name)
         priority = metric.priority if metric else 0
         interface = self.get_interface_ndb(interface_name)
         return InterfaceInfo(
@@ -600,18 +601,18 @@ class EthernetManager:
             priority=priority,
         )
 
-    def add_route(self, interface_name: str, route: Route) -> None:
-        self._execute_route("add", interface_name, route)
+    async def add_route(self, interface_name: str, route: Route) -> None:
+        await self._execute_route("add", interface_name, route)
 
-    def remove_route(self, interface_name: str, route: Route) -> None:
-        self._execute_route("del", interface_name, route)
+    async def remove_route(self, interface_name: str, route: Route) -> None:
+        await self._execute_route("del", interface_name, route)
 
-    def _execute_route(self, action: str, interface_name: str, route: Route) -> None:
+    async def _execute_route(self, action: str, interface_name: str, route: Route) -> None:
         try:
-            interface_index = self._get_interface_index(interface_name)
+            interface_index = await self._get_interface_index(interface_name)
             gateway = self.__class__._normalize_gateway(route.destination_parsed, route.next_hop_parsed)
 
-            self.ipr.route(
+            await self.ipr.route(
                 action,
                 oif=interface_index,
                 dst=str(route.destination_parsed),
@@ -634,16 +635,16 @@ class EthernetManager:
             raise
 
         # Update settings
-        current_interface = self.get_interface_by_name(interface_name)
+        current_interface = await self.get_interface_by_name(interface_name)
         for current_route in current_interface.routes:
             if current_route.destination_parsed == route.destination_parsed and current_route.gateway == route.gateway:
                 current_route.managed = route.managed
         self._update_interface_settings(interface_name, current_interface)
 
-    def get_routes(self, interface_name: str, ignore_unmanaged: bool = True) -> Set[Route]:
+    async def get_routes(self, interface_name: str, ignore_unmanaged: bool = True) -> Set[Route]:
         try:
-            interface_index = self._get_interface_index(interface_name)
-            raw_routes = self.ipr.get_routes(oif=interface_index)
+            interface_index = await self._get_interface_index(interface_name)
+            raw_routes = await self.ipr.get_routes(oif=interface_index)
         except Exception as err:
             logger.error(f"Failed to get routes for {interface_name}: {err}")
             return set()
@@ -716,8 +717,8 @@ class EthernetManager:
 
         return gateway
 
-    def _is_ip_on_interface(self, interface_name: str, ip_address: str) -> bool:
-        interface = self.get_interface_by_name(interface_name)
+    async def _is_ip_on_interface(self, interface_name: str, ip_address: str) -> bool:
+        interface = await self.get_interface_by_name(interface_name)
         return any(True for address in interface.addresses if address.ip == ip_address)
 
     def _is_ip_saved_on_interface(self, interface_name: str, ip_address: str) -> bool:
@@ -776,7 +777,7 @@ class EthernetManager:
         saved_interface.addresses = new_ip_list
         self._update_interface_settings(interface_name, saved_interface)
 
-    def add_dhcp_server_to_interface(self, interface_name: str, ipv4_gateway: str, backup: bool = False) -> None:
+    async def add_dhcp_server_to_interface(self, interface_name: str, ipv4_gateway: str, backup: bool = False) -> None:
         """
         Adds a DHCP server to an interface and saves it to the settings file
         """
@@ -785,7 +786,7 @@ class EthernetManager:
             if (
                 dhcp_on_interface.ipv4_gateway == ipv4_gateway
                 and dhcp_on_interface.is_backup_server == backup
-                and self._is_ip_on_interface(interface_name, ipv4_gateway)
+                and (await self._is_ip_on_interface(interface_name, ipv4_gateway))
             ):
                 logger.warning(
                     f"DHCP server with gateway '{ipv4_gateway}' and backup '{backup}' already exists on interface '{interface_name}'"
@@ -796,7 +797,7 @@ class EthernetManager:
             )
             self.remove_dhcp_server_from_interface(interface_name)
 
-        self.add_static_ip(
+        await self.add_static_ip(
             interface_name, ipv4_gateway, mode=AddressMode.Server if not backup else AddressMode.BackupServer
         )
         logger.info(f"Adding DHCP server with gateway '{ipv4_gateway}' to interface '{interface_name}'.")
@@ -816,7 +817,7 @@ class EthernetManager:
     def __del__(self) -> None:
         self.stop()
 
-    def priorities_mismatch(self) -> List[NetworkInterface]:
+    async def priorities_mismatch(self) -> List[NetworkInterface]:
         """Check if the current interface priorities differ from the saved ones.
         Uses sets for order-independent comparison of NetworkInterfaceMetric objects,
         which compare only name and priority fields.
@@ -826,7 +827,7 @@ class EthernetManager:
         """
 
         mismatched_interfaces = []
-        current_priorities = {interface.name: interface.priority for interface in self.get_interfaces_priority()}
+        current_priorities = {interface.name: interface.priority for interface in await self.get_interfaces_priority()}
 
         for interface in self._settings.content:
             if interface.priority is None:
@@ -839,7 +840,7 @@ class EthernetManager:
 
         return mismatched_interfaces
 
-    def config_mismatch(self) -> Set[NetworkInterface]:
+    async def config_mismatch(self) -> Set[NetworkInterface]:
         """Check if the current interface config differs from the saved ones.
 
         Returns:
@@ -847,7 +848,7 @@ class EthernetManager:
         """
 
         mismatches: Set[NetworkInterface] = set()
-        current_interfaces = self.get_ethernet_interfaces()
+        current_interfaces = await self.get_ethernet_interfaces()
         if len(self._settings.content) == 0:
             logger.debug("No saved configuration found")
             logger.debug(f"Current configuration: {self._settings}")
@@ -885,14 +886,14 @@ class EthernetManager:
         """
         while True:
             try:
-                mismatches = self.config_mismatch()
+                mismatches = await self.config_mismatch()
                 if mismatches:
                     logger.warning("Interface config mismatch, applying saved settings.")
                     logger.debug(f"Mismatches: {mismatches}")
                     for interface in mismatches:
                         logger.info(f"Applying saved settings for {interface.name}")
                         await self.set_configuration(interface, watchdog_call=True)
-                priority_mismatch = self.priorities_mismatch()
+                priority_mismatch = await self.priorities_mismatch()
                 if priority_mismatch:
                     logger.warning("Interface priorities mismatch, applying saved settings.")
                     priorities = [
@@ -900,7 +901,7 @@ class EthernetManager:
                         for interface in self._settings.content
                         if interface.priority is not None
                     ]
-                    self.set_interfaces_priority(priorities)
+                    await self.set_interfaces_priority(priorities)
                 await asyncio.sleep(5)
             except Exception as error:
                 logger.error(f"Error in watchdog: {error}")
