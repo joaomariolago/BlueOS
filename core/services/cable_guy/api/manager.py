@@ -13,12 +13,12 @@ from commonwealth.settings.manager import PydanticManager
 from commonwealth.utils.DHCPDiscovery import DHCPDiscoveryError, discover_dhcp_servers
 from commonwealth.utils.DHCPServerManager import Dnsmasq as DHCPServerManager
 from loguru import logger
-from pyroute2 import IW, NDB, AsyncIPRoute
 from pyroute2.netlink.exceptions import NetlinkError
 from pyroute2.netlink.rtnl.ifaddrmsg import ifaddrmsg
 
 from api import dns, settings
 from config import SERVICE_NAME
+from ip_wrapper import ip_wrapper
 from networksetup import AbstractNetworkHandler, NetworkHandlerDetector
 from typedefs import (
     AddressMode,
@@ -43,12 +43,6 @@ __all__ = [
 
 
 class EthernetManager:
-    # RTNL interface
-    ndb = NDB(log="on")
-    # WIFI interface
-    iw = IW()
-    # IP abstraction interface
-    ipr = AsyncIPRoute()
     # DNS abstraction
     dns = dns.Dns()
     # Network handler for dhcpd and network manager
@@ -116,7 +110,8 @@ class EthernetManager:
             if interface.addresses:
                 # bring interface up
                 interface_index = await self._get_interface_index(interface.name)
-                await self.ipr.link("set", index=interface_index, state="up")
+                async with ip_wrapper.lock:
+                    await ip_wrapper.ipr.link("set", index=interface_index, state="up")
             logger.info(f"Configuring addresses for interface '{interface.name}': {interface.addresses}.")
             for address in interface.addresses:
                 if address.mode == AddressMode.Unmanaged:
@@ -162,14 +157,15 @@ class EthernetManager:
         Returns:
             list: List with the name of the wifi interfaces
         """
-        interfaces = await asyncio.to_thread(self.iw.list_dev)
-        result = []
-        for interface in interfaces:
-            for flag, value in interface["attrs"]:
-                # Extract interface name from IFNAME flag
-                if flag == "NL80211_ATTR_IFNAME":
-                    result += [value]
-        return result
+        async with ip_wrapper.lock:
+            interfaces = await asyncio.to_thread(ip_wrapper.iw.list_dev)
+            result = []
+            for interface in interfaces:
+                for flag, value in interface["attrs"]:
+                    # Extract interface name from IFNAME flag
+                    if flag == "NL80211_ATTR_IFNAME":
+                        result += [value]
+            return result
 
     async def is_valid_interface_name(self, interface_name: str, filter_wifi: bool = False) -> bool:
         """Check if an interface name is valid
@@ -236,17 +232,18 @@ class EthernetManager:
             bool: true if static false if not
         """
 
-        async for address in await self.ipr.get_addr():
-            def get_item(items: List[Tuple[str, Any]], name: str) -> Any:
-                return [value for key, value in items if key == name][0]
+        async with ip_wrapper.lock:
+            async for address in await ip_wrapper.ipr.get_addr():
+                def get_item(items: List[Tuple[str, Any]], name: str) -> Any:
+                    return [value for key, value in items if key == name][0]
 
-            if get_item(address["attrs"], "IFA_ADDRESS") != ip:
-                continue
+                if get_item(address["attrs"], "IFA_ADDRESS") != ip:
+                    continue
 
-            flags = get_item(address["attrs"], "IFA_FLAGS")
-            result = "IFA_F_PERMANENT" in ifaddrmsg.flags2names(flags)
-            return result
-        return False
+                flags = get_item(address["attrs"], "IFA_FLAGS")
+                result = "IFA_F_PERMANENT" in ifaddrmsg.flags2names(flags)
+                return result
+            return False
 
     async def _get_interface_index(self, interface_name: str) -> int:
         """Get interface index for internal usage
@@ -257,8 +254,9 @@ class EthernetManager:
         Returns:
             int: Interface index
         """
-        interface_index = int((await self.ipr.link_lookup(ifname=interface_name))[0])
-        return interface_index
+        async with ip_wrapper.lock:
+            interface_index = int((await ip_wrapper.ipr.link_lookup(ifname=interface_name))[0])
+            return interface_index
 
     async def flush_interface(self, interface_name: str) -> None:
         """Flush all ip addresses in a specific interface
@@ -267,7 +265,8 @@ class EthernetManager:
             interface_name (str): Interface name
         """
         interface_index = await self._get_interface_index(interface_name)
-        await self.ipr.flush_addr(index=interface_index)
+        async with ip_wrapper.lock:
+            await ip_wrapper.ipr.flush_addr(index=interface_index)
         logger.info(f"Flushing IP addresses from interface {interface_name}.")
 
     async def enable_interface(self, interface_name: str, enable: bool = True) -> None:
@@ -279,7 +278,8 @@ class EthernetManager:
         """
         interface_index = await self._get_interface_index(interface_name)
         interface_state = "up" if enable else "down"
-        await self.ipr.link("set", index=interface_index, state=interface_state)
+        async with ip_wrapper.lock:
+            await ip_wrapper.ipr.link("set", index=interface_index, state=interface_state)
         logger.info(f"Setting interface {interface_name} to '{interface_state}' state.")
 
     async def trigger_dynamic_ip_acquisition(self, interface_name: str) -> None:
@@ -461,7 +461,7 @@ class EthernetManager:
         """
         return await self.get_interfaces(filter_wifi=True)
 
-    def get_interface_ndb(self, interface_name: str) -> Any:
+    async def get_interface_ndb(self, interface_name: str) -> Any:
         """Get interface NDB information for interface
 
         Args:
@@ -470,7 +470,8 @@ class EthernetManager:
         Returns:
             pyroute2.ndb.objects.interface.Interface: pyroute2 interface object
         """
-        return self.ndb.interfaces.dump().filter(ifname=interface_name)[0]
+        async with ip_wrapper.lock:
+            return ip_wrapper.ndb.interfaces.dump().filter(ifname=interface_name)[0]
 
     @cached(ttl=1)
     async def get_interfaces_priority(self) -> List[NetworkInterfaceMetric]:
@@ -488,44 +489,45 @@ class EthernetManager:
             List[NetworkInterfaceMetric]: A list of priority metrics for each active interface.
         """
 
-        interfaces = await self.ipr.get_links()
-        # I hope that you are not here to move this code to IPv6.
-        # If that is the case, you'll need to figure out a way to handle
-        # priorities between interfaces, between IP categories.
-        # GLHF
-        routes = await self.ipr.get_routes(family=AddressFamily.AF_INET)
+        async with ip_wrapper.lock:
+            interfaces = await ip_wrapper.ipr.get_links()
+            # I hope that you are not here to move this code to IPv6.
+            # If that is the case, you'll need to figure out a way to handle
+            # priorities between interfaces, between IP categories.
+            # GLHF
+            routes = await ip_wrapper.ipr.get_routes(family=AddressFamily.AF_INET)
 
-        # First find interfaces with default routes
-        interfaces_with_default_routes = set()
-        async for route in routes:
-            dst = route.get_attr("RTA_DST")
-            oif = route.get_attr("RTA_OIF")
-            if dst is None and oif is not None:  # Default route
-                interfaces_with_default_routes.add(oif)
+            # First find interfaces with default routes
+            interfaces_with_default_routes = set()
+            async for route in routes:
+                dst = route.get_attr("RTA_DST")
+                oif = route.get_attr("RTA_OIF")
+                if dst is None and oif is not None:  # Default route
+                    interfaces_with_default_routes.add(oif)
 
-        # Generate a dict of index to network name, but only for interfaces that are UP and RUNNING
-        # IFF_UP flag is 0x1, IFF_RUNNING is 0x40 in Linux
-        name_dict = {
-            iface["index"]: iface.get_attr("IFLA_IFNAME")
-            async for iface in interfaces
-            if (iface["flags"] & 0x1) and (iface["flags"] & 0x40) and iface["index"] in interfaces_with_default_routes
-        }
+            # Generate a dict of index to network name, but only for interfaces that are UP and RUNNING
+            # IFF_UP flag is 0x1, IFF_RUNNING is 0x40 in Linux
+            name_dict = {
+                iface["index"]: iface.get_attr("IFLA_IFNAME")
+                async for iface in interfaces
+                if (iface["flags"] & 0x1) and (iface["flags"] & 0x40) and iface["index"] in interfaces_with_default_routes
+            }
 
-        # Get metrics for default routes of active interfaces
-        interface_metrics: Dict[int, int] = {}
-        async for route in routes:
-            oif = route.get_attr("RTA_OIF")
-            if oif in name_dict and route.get_attr("RTA_DST") is None:  # Only default routes
-                metric = route.get_attr("RTA_PRIORITY", 0)
-                # Keep the highest metric for each interface
-                if oif not in interface_metrics or metric > interface_metrics[oif]:
-                    interface_metrics[oif] = metric
+            # Get metrics for default routes of active interfaces
+            interface_metrics: Dict[int, int] = {}
+            async for route in routes:
+                oif = route.get_attr("RTA_OIF")
+                if oif in name_dict and route.get_attr("RTA_DST") is None:  # Only default routes
+                    metric = route.get_attr("RTA_PRIORITY", 0)
+                    # Keep the highest metric for each interface
+                    if oif not in interface_metrics or metric > interface_metrics[oif]:
+                        interface_metrics[oif] = metric
 
-        # Create the list of interface metrics
-        return [
-            NetworkInterfaceMetric(index=index, name=name, priority=interface_metrics.get(index, 0))
-            for index, name in name_dict.items()
-        ]
+            # Create the list of interface metrics
+            return [
+                NetworkInterfaceMetric(index=index, name=name, priority=interface_metrics.get(index, 0))
+                for index, name in name_dict.items()
+            ]
 
     async def set_interfaces_priority(self, interfaces: List[NetworkInterfaceMetricApi]) -> None:
         """Sets network interface priority. This is an abstraction function for different
@@ -593,7 +595,7 @@ class EthernetManager:
         """
         metric = await self.get_interface_priority(interface_name)
         priority = metric.priority if metric else 0
-        interface = self.get_interface_ndb(interface_name)
+        interface = await self.get_interface_ndb(interface_name)
         return InterfaceInfo(
             connected=interface.carrier != 0,
             number_of_disconnections=interface.carrier_down_count,
@@ -611,13 +613,14 @@ class EthernetManager:
             interface_index = await self._get_interface_index(interface_name)
             gateway = self.__class__._normalize_gateway(route.destination_parsed, route.next_hop_parsed)
 
-            await self.ipr.route(
-                action,
-                oif=interface_index,
-                dst=str(route.destination_parsed),
-                gateway=str(gateway) if gateway else None,
-                metrics={"metric": route.priority} if route.priority else None,
-            )
+            async with ip_wrapper.lock:
+                await ip_wrapper.ipr.route(
+                    action,
+                    oif=interface_index,
+                    dst=str(route.destination_parsed),
+                    gateway=str(gateway) if gateway else None,
+                    metrics={"metric": route.priority} if route.priority else None,
+                )
 
             act = "Removed" if action == "del" else "Added" if action == "add" else action
             logger.info(f"{act} route to {route.destination_parsed} via {gateway} on {interface_name}")
@@ -643,7 +646,8 @@ class EthernetManager:
     async def get_routes(self, interface_name: str, ignore_unmanaged: bool = True) -> Set[Route]:
         try:
             interface_index = await self._get_interface_index(interface_name)
-            raw_routes = await self.ipr.get_routes(oif=interface_index)
+            async with ip_wrapper.lock:
+                raw_routes = await ip_wrapper.ipr.get_routes(oif=interface_index)
         except Exception as err:
             logger.error(f"Failed to get routes for {interface_name}: {err}")
             return set()
@@ -652,25 +656,26 @@ class EthernetManager:
         saved_routes = saved_iface.routes if saved_iface is not None else []
 
         routes: Set[Route] = set()
-        for raw_route in raw_routes:
-            try:
-                route = self._parse_route(raw_route)
+        async with ip_wrapper.lock:
+            for raw_route in raw_routes:
+                try:
+                    route = self._parse_route(raw_route)
 
-            except Exception as err:
-                logger.error(f"Failed to parse route record {raw_route}: {err}")
-                continue
+                except Exception as err:
+                    logger.error(f"Failed to parse route record {raw_route}: {err}")
+                    continue
 
-            # Synchronize the 'managed' attribute
-            for saved_route in saved_routes:
-                if saved_route == route:
-                    route.managed = saved_route.managed
+                # Synchronize the 'managed' attribute
+                for saved_route in saved_routes:
+                    if saved_route == route:
+                        route.managed = saved_route.managed
 
-            if ignore_unmanaged and not route.managed:
-                continue
+                if ignore_unmanaged and not route.managed:
+                    continue
 
-            routes.add(route)
+                routes.add(route)
 
-        return routes
+            return routes
 
     def _parse_route(
         self,
