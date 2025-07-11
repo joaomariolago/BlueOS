@@ -1,0 +1,34 @@
+from os import path
+
+from commonwealth.utils.apis import GenericErrorHandlingRoute
+from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi_versioning import VersionedFastAPI
+
+# Routers
+from api.v1.routers import index_router_v1
+
+application = FastAPI(
+    title="Version Chooser API",
+    description="Version Chooser is the BlueOS service responsible for managing BlueOS versions",
+)
+application.router.route_class = GenericErrorHandlingRoute
+
+# API v1
+application.include_router(index_router_v1)
+
+application = VersionedFastAPI(application, prefix_format="/v{major}.{minor}", enable_latest=True)
+
+
+@application.get("/", status_code=200)
+async def root() -> RedirectResponse:
+    """
+    Root endpoint for the Version Chooser.
+    """
+
+    return RedirectResponse(url="/static/pages/root.html")
+
+
+# Mount static files
+application.mount("/static", StaticFiles(directory=path.join(path.dirname(__file__), "static")), name="static")

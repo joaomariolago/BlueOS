@@ -4,8 +4,6 @@ import os
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List
 
-from aiohttp import web
-
 DOCKER_USER_CONFIG_DIR = "/home/pi/.docker"
 DOCKER_ROOT_CONFIG_DIR = "/root/.docker"
 
@@ -95,7 +93,7 @@ def logout_from_file(info: DockerLoginInfo, file_path: str) -> None:
         json.dump(config, file, indent=4)
 
 
-def get_docker_accounts() -> web.Response:
+def get_docker_accounts() -> List[Dict[str, Any]]:
     root_accounts = get_accounts_from_file(DOCKER_ROOT_CONFIG_FILE, True)
     user_accounts = get_accounts_from_file(DOCKER_USER_CONFIG_FILE, False)
 
@@ -105,7 +103,7 @@ def get_docker_accounts() -> web.Response:
 
     accounts = root_accounts + user_accounts
 
-    return web.json_response([asdict(account) for account in accounts])
+    return [asdict(account) for account in accounts]
 
 
 def make_docker_login(info: DockerLoginInfo) -> None:
