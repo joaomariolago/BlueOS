@@ -6,9 +6,7 @@ class JobStream:
     def __init__(self) -> None:
         self._chunks: List[bytes] = []
         self._updated = asyncio.Event()
-        self._detached = asyncio.Event()
         self._done = False
-        self._subscribers = 0
         self._retries = 0
 
     def publish(self, chunk: bytes) -> None:
@@ -24,29 +22,17 @@ class JobStream:
         self._done = True
         self._updated.set()
 
-    async def wait_drained(self) -> None:
-        while True:
-            self._detached.clear()
-            if self._subscribers == 0:
-                return
-            await self._detached.wait()
-
     async def subscribe(self) -> AsyncGenerator[bytes, None]:
-        self._subscribers += 1
-        try:
-            index = 0
-            retries = self._retries
-            while True:
-                self._updated.clear()
-                if retries != self._retries:
-                    retries = self._retries
-                    index = 0
-                while index < len(self._chunks):
-                    yield self._chunks[index]
-                    index += 1
-                if self._done:
-                    return
-                await self._updated.wait()
-        finally:
-            self._subscribers -= 1
-            self._detached.set()
+        index = 0
+        retries = self._retries
+        while True:
+            self._updated.clear()
+            if retries != self._retries:
+                retries = self._retries
+                index = 0
+            while index < len(self._chunks):
+                yield self._chunks[index]
+                index += 1
+            if self._done:
+                return
+            await self._updated.wait()

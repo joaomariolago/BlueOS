@@ -50,7 +50,6 @@ class JobsManager:
                     await self.execute_job(JobsManager._executing_job)
                 finally:
                     stream.close()
-                    await stream.wait_drained()
                     JobsManager._streams.pop(JobsManager._executing_job.id, None)
                     JobsManager._executing_job = None
 
